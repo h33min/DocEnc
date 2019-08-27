@@ -76,7 +76,7 @@ func evaluatePolynomial(polynomial []*big.Int, value *big.Int) *big.Int {
 		result = result.Mul(result, value)
 		result = result.Add(result, polynomial[s])
 		result = result.Mod(result, prime)
-	}	
+	}
 
 	return result
 }

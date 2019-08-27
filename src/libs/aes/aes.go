@@ -1,68 +1,90 @@
 package aes
 
 import (
+	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
+	"encoding/base64"
 	"errors"
-	"fmt"
 	"io"
+	"strings"
 )
 
-type Aes struct {
-	block cipher.Block
-}
-
-func NewAesCipher(key string) (*Aes, error) {
-	block, err := aes.NewCipher([]byte(key))
-
-	//TODO: AES-256는 key가 32 Bytes 이어야 함
-	if len(key) != 32 {
-		return nil, errors.New("AES-256 needs a key of 32 bytes")
+func addBase64Padding(value string) string {
+	m := len(value) % 4
+	if m != 0 {
+		value += strings.Repeat("=", 4-m)
 	}
 
+	return value
+}
+
+func removeBase64Padding(value string) string {
+	return strings.Replace(value, "=", "", -1)
+}
+
+func Pad(src []byte) []byte {
+	padding := aes.BlockSize - len(src)%aes.BlockSize
+	padtext := bytes.Repeat([]byte{byte(padding)}, padding)
+	return append(src, padtext...)
+}
+
+func Unpad(src []byte) ([]byte, error) {
+	length := len(src)
+	unpadding := int(src[length-1])
+
+	if unpadding > length {
+		return nil, errors.New("unpad error. This could happen when incorrect encryption key is used")
+	}
+
+	return src[:(length - unpadding)], nil
+}
+
+func Encrypt(key []byte, text []byte) (string, error) {
+	block, err := aes.NewCipher(key)
 	if err != nil {
-		return nil, err
+		return "", err
 	}
 
-	return &Aes{
-		block: block,
-	}, nil
+	msg := Pad(text)
+	ciphertext := make([]byte, aes.BlockSize+len(msg))
+	iv := ciphertext[:aes.BlockSize]
+	if _, err := io.ReadFull(rand.Reader, iv); err != nil {
+		return "", err
+	}
+
+	cfb := cipher.NewCFBEncrypter(block, iv)
+	cfb.XORKeyStream(ciphertext[aes.BlockSize:], []byte(msg))
+	finalMsg := removeBase64Padding(base64.URLEncoding.EncodeToString(ciphertext))
+	return finalMsg, nil
 }
 
-func (a *Aes) Encrypt(plaintext []byte) []byte {
-	if mod := len(plaintext) % aes.BlockSize; mod != 0 { // 블록 크기의 배수가 되어야함
-		padding := make([]byte, aes.BlockSize-mod) // 블록 크기에서 모자라는 부분을
-		plaintext = append(plaintext, padding...)  // 채워줌
+func Decrypt(key []byte, text []byte) (string, error) {
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return "", err
 	}
 
-	ciphertext := make([]byte, aes.BlockSize+len(plaintext)) // 초기화 벡터 공간(aes.BlockSize)만큼 더 생성
-	iv := ciphertext[:aes.BlockSize]                         // 부분 슬라이스로 초기화 벡터 공간을 가져옴
-	if _, err := io.ReadFull(rand.Reader, iv); err != nil {  // 랜덤 값을 초기화 벡터에 넣어줌
-		fmt.Println(err)
-		return nil
+	decodedMsg, err := base64.URLEncoding.DecodeString(addBase64Padding(string(text)))
+	if err != nil {
+		return "", err
 	}
 
-	mode := cipher.NewCBCEncrypter(a.block, iv)             // 암호화 블록과 초기화 벡터를 넣어서 암호화 블록 모드 인스턴스 생성
-	mode.CryptBlocks(ciphertext[aes.BlockSize:], plaintext) // 암호화 블록 모드 인스턴스로
-	// 암호화
-
-	return ciphertext
-}
-
-func (a *Aes) Decrypt(ciphertext []byte) []byte {
-	if len(ciphertext)%aes.BlockSize != 0 { // 블록 크기의 배수가 아니면 리턴
-		fmt.Println("암호화된 데이터의 길이는 블록 크기의 배수가 되어야합니다.")
-		return nil
+	if (len(decodedMsg) % aes.BlockSize) != 0 {
+		return "", errors.New("blocksize must be multipe of decoded message length")
 	}
 
-	iv := ciphertext[:aes.BlockSize]        // 부분 슬라이스로 초기화 벡터 공간을 가져옴
-	ciphertext = ciphertext[aes.BlockSize:] // 부분 슬라이스로 암호화된 데이터를 가져옴
+	iv := decodedMsg[:aes.BlockSize]
+	msg := decodedMsg[aes.BlockSize:]
 
-	plaintext := make([]byte, len(ciphertext))  // 평문 데이터를 저장할 공간 생성
-	mode := cipher.NewCBCDecrypter(a.block, iv) // 암호화 블록과 초기화 벡터를 넣어서
-	// 복호화 블록 모드 인스턴스 생성
-	mode.CryptBlocks(plaintext, ciphertext) // 복호화 블록 모드 인스턴스로 복호화
+	cfb := cipher.NewCFBDecrypter(block, iv)
+	cfb.XORKeyStream(msg, msg)
 
-	return plaintext
+	unpadMsg, err := Unpad(msg)
+	if err != nil {
+		return "", err
+	}
+
+	return string(unpadMsg), nil
 }
